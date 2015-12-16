@@ -12,10 +12,10 @@ def h2i(hero_name):
 a = joblib.load(sys.argv[1])
 x = []
 y = []
-xx = []
-yy = []
 for match in a:
     print match
+    tmp_x = []
+    tmp_y = []
     for team, bans_picks in match.iteritems():
         if team == 'winner':
             continue
@@ -29,8 +29,8 @@ with open("gosugamers_x.npy", 'w') as wf:
     np.save(wf, x)
 with open("gosugamers_y.npy", 'w') as wf:
     np.save(wf, y)
-np.savetxt("gosugamers_x.csv", x, delimiter=',')
-np.savetxt("gosugamers_y.csv", y, delimiter=',')
+np.savetxt("gosugamers_x.csv", x, delimiter=',', fmt="%d")
+np.savetxt("gosugamers_y.csv", y, delimiter=',', fmt="%d")
 
 print(len(heroes))
 print(x.shape)
