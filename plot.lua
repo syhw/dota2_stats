@@ -5,7 +5,7 @@ local emb = torch.load("embedding.th7")
 local s = emb.weight:size()
 local ndims = s[1]
 local nheroes = s[2]
-local p = m.embedding.tsne(emb.weight:t(), {dim=2})
+local p = m.embedding.tsne(emb.weight:t(), {dim=2, perplexity=30})
 --print(p)
 local heroes = json.load("heroes.json")
 for i=1, p:size(1) do

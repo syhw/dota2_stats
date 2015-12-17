@@ -25,7 +25,7 @@ local ys = torch.Tensor(#y/2, 1)
 for i=1, #y, 2 do
     local team1 = x[i]
     local team2 = x[i+1]
-    local winner = y[i] == 0 and 1 or 0
+    local winner = tonumber(y[i][1]) == 0 and 1 or 0
     for j, h in pairs(team1) do
         teams1[math.ceil(i/2)][j] = eye[tonumber(h)+1]
     end
@@ -47,6 +47,7 @@ local emb2 = nn.Linear(nheroes, emb_size)
 local model = nn.Sequential()
 model:add(nn.ParallelTable():add(emb1):add(emb2))
 model:add(nn.JoinTable(1))
+model:add(nn.Sigmoid())
 model:add(nn.Linear(2*emb_size, 1))
 model:add(nn.Sigmoid())
 print(model)
@@ -79,14 +80,16 @@ end
 
 -- configure training 
 local params, dparams = model:getParameters()
-local adagrad = true
+local adagrad = false
+local adam = false
+--local adaconfig = {weightDecay=0.01, nesterov=true, momentum=0.9, lr=0.1, lrd=0.0001, dampening=0}
 local adaconfig = {}
 local adastate = {}
-local nepoch = 100
-local lr = 0.001
+local nepoch = 20000
+local lr = 0.1
 local prob = torch.ones(ys:size(1))
 -- extract a validation dataset
-local nvalid = 200
+local nvalid = 500
 local ntrain = ys:size(1) - nvalid
 local valid_inds = torch.multinomial(prob, nvalid, false)
 local valid_mask = torch.zeros(ys:size(1)):byte()
@@ -104,6 +107,7 @@ local train_teams1 = teams1[train_mask]:view(ntrain, teams1:size(2), teams1:size
 local train_teams2 = teams2[train_mask]:view(ntrain, teams2:size(2), teams2:size(3))
 print("train", train_ys:size())
 print("valid", valid_ys:size())
+print("bias in wins", valid_ys:mean())
 -- training
 for epoch=1, nepoch do
     local avgtrerr = 0
@@ -126,21 +130,31 @@ for epoch=1, nepoch do
         if adagrad then
             _, err = optim.adagrad(feval, params, adaconfig, adastate)
             err = err[1]
+        elseif adam then
+            _, err = optim.adam(feval, params, adaconfig, adastate)
+            err = err[1]
         else
-            err, _ = feval(params)
-            model:updateParameters(lr)
+            --err, _ = feval(params)
+            --model:updateParameters(lr)
+            _, err = optim.sgd(feval, params, adaconfig, adastate)
+            err = err[1]
         end
         avgtrerr = avgtrerr + err
     end
     local avgvalerr = 0
+    local ncorrects = 0
     for i=1, valid_ys:size(1) do
         local x1 = valid_teams1[i]:sum(1):squeeze()
         local x2 = valid_teams2[i]:sum(1):squeeze()
         local y = valid_ys[i]
         avgvalerr = avgvalerr + crit:forward(model:forward({x1, x2}), y)
+        if y == torch.round(model.output[1]) then
+            ncorrects = ncorrects + 1
+        end
     end
     print("average train error this epoch", avgtrerr/train_ys:size(1))
     print("average valid error this epoch", avgvalerr/valid_ys:size(1))
+    print("average valid acc this epoch", ncorrects/valid_ys:size(1))
 end
 
 torch.save("model.th7", model)
