@@ -1,7 +1,10 @@
 require 'csvigo'
 require 'json'
 require 'nn'
+require 'optim'
 
+
+-- preprocessing / data loading
 local function tlength(t)
     local n = 0
     for _, _ in pairs(t) do
@@ -12,6 +15,7 @@ end
 
 local heroes = json.load("heroes.json")
 local nheroes = tlength(heroes) / 2
+print("nheroes", nheroes)
 local eye = torch.eye(nheroes)
 local x = csvigo.load({path="gosugamers_x.csv", mode="large"})
 local y = csvigo.load({path="gosugamers_y.csv", mode="large"})
@@ -34,9 +38,12 @@ print(teams1:size())
 print(teams2:size())
 print(ys:size())
 
+
+-- model
 local emb_size = 20
 local emb1 = nn.Linear(nheroes, emb_size)
-local emb2 = emb1:clone('weight', 'bias')
+--local emb2 = emb1:clone('weight', 'bias')
+local emb2 = nn.Linear(nheroes, emb_size)
 local model = nn.Sequential()
 model:add(nn.ParallelTable():add(emb1):add(emb2))
 model:add(nn.JoinTable(1))
@@ -45,8 +52,9 @@ model:add(nn.Sigmoid())
 print(model)
 
 local crit = nn.BCECriterion()
-local lr = 0.01
 
+
+-- heuristic for halving the learning rate
 local smoothing_size = 42
 local err_buf_size = 1000
 local err_smoothing = torch.ones(smoothing_size)
@@ -68,21 +76,72 @@ local function check_progress(ind, err, lr)
     return lr
 end
 
+
+-- configure training 
+local params, dparams = model:getParameters()
+local adagrad = true
+local adaconfig = {}
+local adastate = {}
 local nepoch = 100
+local lr = 0.001
+local prob = torch.ones(ys:size(1))
+-- extract a validation dataset
+local nvalid = 200
+local ntrain = ys:size(1) - nvalid
+local valid_inds = torch.multinomial(prob, nvalid, false)
+local valid_mask = torch.zeros(ys:size(1)):byte()
+for i=1, valid_inds:size(1) do
+    valid_mask[valid_inds[i]] = 1
+end
+local valid_ys = ys[valid_mask]:view(-1, 1)
+local train_mask = valid_mask:le(0.5)
+local train_ys = ys[train_mask]:view(-1, 1)
+valid_mask = valid_mask:view(valid_mask:size(1), 1, 1):expand(teams1:size())
+train_mask = valid_mask:le(0.5)
+local valid_teams1 = teams1[valid_mask]:view(nvalid, teams1:size(2), teams1:size(3))
+local valid_teams2 = teams2[valid_mask]:view(nvalid, teams2:size(2), teams2:size(3))
+local train_teams1 = teams1[train_mask]:view(ntrain, teams1:size(2), teams1:size(3))
+local train_teams2 = teams2[train_mask]:view(ntrain, teams2:size(2), teams2:size(3))
+print("train", train_ys:size())
+print("valid", valid_ys:size())
+-- training
 for epoch=1, nepoch do
-    for i=1, ys:size(1) do
-        local x1 = teams1[i]:sum(1):squeeze()
-        local x2 = teams2[i]:sum(1):squeeze()
-        local y = ys[i]
-        local err = crit:forward(model:forward({x1, x2}), y)
-        if epoch > 1 then
-            lr = check_progress(i, err, lr)
+    local avgtrerr = 0
+    for i=1, train_ys:size(1) do
+        local x1 = train_teams1[i]:sum(1):squeeze()
+        local x2 = train_teams2[i]:sum(1):squeeze()
+        local y = train_ys[i]
+        local err
+        local function feval(par)
+            assert(par == params)
+            local err = crit:forward(model:forward({x1, x2}), y)
+            --if epoch > 1 then
+            --    lr = check_progress(i, err, lr)
+            --end
+            local grad = crit:backward(model.output, y)
+            model:zeroGradParameters()
+            model:backward({x1, x2}, grad)
+            return err, dparams
         end
-        local grad = crit:backward(model.output, y)
-        model:zeroGradParameters()
-        model:backward({x1, x2}, grad)
-        model:updateParameters(lr)
-        --print(err)
+        if adagrad then
+            _, err = optim.adagrad(feval, params, adaconfig, adastate)
+            err = err[1]
+        else
+            err, _ = feval(params)
+            model:updateParameters(lr)
+        end
+        avgtrerr = avgtrerr + err
     end
+    local avgvalerr = 0
+    for i=1, valid_ys:size(1) do
+        local x1 = valid_teams1[i]:sum(1):squeeze()
+        local x2 = valid_teams2[i]:sum(1):squeeze()
+        local y = valid_ys[i]
+        avgvalerr = avgvalerr + crit:forward(model:forward({x1, x2}), y)
+    end
+    print("average train error this epoch", avgtrerr/train_ys:size(1))
+    print("average valid error this epoch", avgvalerr/valid_ys:size(1))
 end
 
+torch.save("model.th7", model)
+torch.save("embedding.th7", emb1)
